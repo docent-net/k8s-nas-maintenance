@@ -1,30 +1,68 @@
 package kube
 
 import (
+    "context"
     "testing"
+    "time"
 
     "k8s.io/client-go/kubernetes"
+    "k8s.io/client-go/kubernetes/fake"
 )
 
-type MockScalable struct {
-    Replicas int32
+type MockScaler struct {
+    replicas         int32
+    originalReplicas int32
 }
 
-func (m *MockScalable) GetReplicas() int32                { return 0 }
-func (m *MockScalable) SetReplicas(replicas int32)        { m.Replicas = replicas }
-func (m *MockScalable) GetOriginalReplicas() int32        { return m.Replicas }
-func (m *MockScalable) Update(clientset *kubernetes.Clientset, namespace, name string) error { return nil }
+func (m *MockScaler) GetReplicas() int32 {
+    return m.replicas
+}
 
-func TestScaleResource(t *testing.T) {
-    clientset := &kubernetes.Clientset{}
-    scaler := &MockScalable{}
+func (m *MockScaler) SetReplicas(replicas int32) {
+    if replicas > 0 {
+        m.originalReplicas = m.replicas
+    }
+    m.replicas = replicas
+}
 
-    namespace := "default"
-    replicas := int32(3)
+func (m *MockScaler) GetOriginalReplicas() int32 {
+    return m.originalReplicas
+}
 
-    ScaleResource(clientset, scaler, namespace, replicas)
+func (m *MockScaler) Update(clientset kubernetes.Interface, namespace string, ctx context.Context) error {
+    select {
+    case <-ctx.Done():
+        return ctx.Err()
+    case <-time.After(2 * time.Millisecond): // Simulate some processing time
+        // Simulate an update operation
+        return nil
+    }
+}
 
-    if scaler.Replicas != replicas {
-        t.Errorf("expected replicas to be %d, got %d", replicas, scaler.Replicas)
+func TestScaleResourceWithContext(t *testing.T) {
+    clientset := fake.NewSimpleClientset()
+    scaler := &MockScaler{replicas: 3}
+
+    ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+    defer cancel()
+
+    err := ScaleResourceWithContext(ctx, clientset, scaler, "default", 1)
+    if err != nil {
+        t.Fatalf("expected no error, got %v", err)
+    }
+
+    if scaler.GetReplicas() != 1 {
+        t.Errorf("expected replicas to be 1, got %d", scaler.GetReplicas())
+    }
+
+    // Test context timeout
+    ctx, cancel = context.WithTimeout(context.Background(), 1*time.Nanosecond)
+    defer cancel()
+
+    time.Sleep(2 * time.Nanosecond) // Ensure the context has expired
+
+    err = ScaleResourceWithContext(ctx, clientset, scaler, "default", 2)
+    if err == nil {
+        t.Errorf("expected an error due to context timeout")
     }
 }

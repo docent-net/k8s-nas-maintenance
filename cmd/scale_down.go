@@ -10,9 +10,11 @@ import (
     "github.com/docent-net/k8s-nas-maintenance/internal/logging"
     "github.com/docent-net/k8s-nas-maintenance/internal/utils"
     "go.uber.org/zap"
+    "golang.org/x/time/rate"
     "k8s.io/client-go/kubernetes"
-    "k8s.io/client-go/rest"
+    "k8s.io/client-go/tools/clientcmd"
     metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    "k8s.io/client-go/util/retry"
 )
 
 var scaleDownCmd = &cobra.Command{
@@ -29,10 +31,12 @@ func runScaleDown(cmd *cobra.Command, args []string) {
     namespace, _ := cmd.Flags().GetString("namespace")
     storageClass, _ := cmd.Flags().GetString("storage-class")
     replicaFile, _ := cmd.Flags().GetString("replica-file")
+    dryRun, _ := cmd.Flags().GetBool("dry-run")
 
-    config, err := rest.InClusterConfig()
+    kubeconfig := clientcmd.NewDefaultClientConfigLoadingRules().GetDefaultFilename()
+    config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
     if err != nil {
-        logging.Logger.Error("Error creating in-cluster config", zap.Error(err))
+        logging.Logger.Error("Error loading kubeconfig", zap.Error(err))
         return
     }
 
@@ -45,6 +49,7 @@ func runScaleDown(cmd *cobra.Command, args []string) {
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
     defer cancel()
 
+    limiter := rate.NewLimiter(rate.Every(200*time.Millisecond), 1) // Adjust rate as necessary
     workloadReplicas := make(map[string]kube.Scalable)
     var wg sync.WaitGroup
 
@@ -101,7 +106,17 @@ func runScaleDown(cmd *cobra.Command, args []string) {
                                             logging.Logger.Error("Error getting Deployment", zap.Error(err))
                                             continue
                                         }
-                                        workloadReplicas["deployment/"+deployment.Name] = &kube.DeploymentScaler{Deployment: deployment}
+                                        scaler := &kube.DeploymentScaler{Deployment: deployment}
+                                        logging.Logger.Info("Current Deployment replicas",
+                                            zap.String("name", deployment.Name),
+                                            zap.String("namespace", ns),
+                                            zap.Int32("replicas", scaler.GetReplicas()),
+                                        )
+                                        if scaler.GetReplicas() == 0 {
+                                            logging.Logger.Info("Skipping Deployment already at 0 replicas", zap.String("name", deployment.Name), zap.String("namespace", ns))
+                                            continue
+                                        }
+                                        workloadReplicas["deployment/"+deployment.Name] = scaler
                                     }
                                 case "StatefulSet":
                                     statefulSet, err := clientset.AppsV1().StatefulSets(ns).Get(ctx, ownerRef.Name, metav1.GetOptions{})
@@ -109,14 +124,37 @@ func runScaleDown(cmd *cobra.Command, args []string) {
                                         logging.Logger.Error("Error getting StatefulSet", zap.Error(err))
                                         continue
                                     }
-                                    workloadReplicas["statefulset/"+statefulSet.Name] = &kube.StatefulSetScaler{StatefulSet: statefulSet}
+                                    scaler := &kube.StatefulSetScaler{StatefulSet: statefulSet}
+                                    logging.Logger.Info("Current StatefulSet replicas",
+                                        zap.String("name", statefulSet.Name),
+                                        zap.String("namespace", ns),
+                                        zap.Int32("replicas", scaler.GetReplicas()),
+                                    )
+                                    if scaler.GetReplicas() == 0 {
+                                        logging.Logger.Info("Skipping StatefulSet already at 0 replicas", zap.String("name", statefulSet.Name), zap.String("namespace", ns))
+                                        continue
+                                    }
+                                    workloadReplicas["statefulset/"+statefulSet.Name] = scaler
                                 case "DaemonSet":
                                     daemonSet, err := clientset.AppsV1().DaemonSets(ns).Get(ctx, ownerRef.Name, metav1.GetOptions{})
                                     if err != nil {
                                         logging.Logger.Error("Error getting DaemonSet", zap.Error(err))
                                         continue
                                     }
-                                    workloadReplicas["daemonset/"+daemonSet.Name] = &kube.DaemonSetScaler{DaemonSet: daemonSet}
+                                    scaler := &kube.DaemonSetScaler{DaemonSet: daemonSet}
+                                    logging.Logger.Info("Current DaemonSet replicas",
+                                        zap.String("name", daemonSet.Name),
+                                        zap.String("namespace", ns),
+                                        zap.Int32("replicas", scaler.GetReplicas()),
+                                    )
+                                    workloadReplicas["daemonset/"+daemonSet.Name] = scaler
+                                case "Job":
+                                    job, err := clientset.BatchV1().Jobs(ns).Get(ctx, ownerRef.Name, metav1.GetOptions{})
+                                    if err != nil {
+                                        logging.Logger.Error("Error getting Job", zap.Error(err))
+                                        continue
+                                    }
+                                    logging.Logger.Info("Waiting for Job to complete", zap.String("jobName", job.Name))
                                 default:
                                     logging.Logger.Warn("Unknown resource kind", zap.String("kind", ownerRef.Kind), zap.String("name", ownerRef.Name))
                                 }
@@ -140,10 +178,14 @@ func runScaleDown(cmd *cobra.Command, args []string) {
     // Output or scale down the workloads
     for workload, scaler := range workloadReplicas {
         if dryRun {
-            logging.Logger.Info("Would scale down", zap.String("workload", workload))
+            logging.Logger.Info("Would scale down", zap.String("workload", workload), zap.Int32("originalReplicas", scaler.GetOriginalReplicas()))
         } else {
-            logging.Logger.Info("Scaling down", zap.String("workload", workload))
-            kube.ScaleResource(clientset, scaler, namespace, 0)
+            limiter.Wait(ctx)
+            retry.OnError(retry.DefaultBackoff, func(error) bool { return true }, func() error {
+                logging.Logger.Info("Scaling down", zap.String("workload", workload), zap.Int32("originalReplicas", scaler.GetOriginalReplicas()))
+                scaler.SetReplicas(0)
+                return scaler.Update(clientset, namespace, ctx)
+            })
         }
     }
 

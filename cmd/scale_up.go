@@ -10,8 +10,10 @@ import (
     "github.com/docent-net/k8s-nas-maintenance/internal/logging"
     "github.com/docent-net/k8s-nas-maintenance/internal/utils"
     "go.uber.org/zap"
+    "golang.org/x/time/rate"
     "k8s.io/client-go/kubernetes"
-    "k8s.io/client-go/rest"
+    "k8s.io/client-go/tools/clientcmd"
+    "k8s.io/client-go/util/retry"
 )
 
 var scaleUpCmd = &cobra.Command{
@@ -29,9 +31,10 @@ func runScaleUp(cmd *cobra.Command, args []string) {
     storageClass, _ := cmd.Flags().GetString("storage-class")
     replicaFile, _ := cmd.Flags().GetString("replica-file")
 
-    config, err := rest.InClusterConfig()
+    kubeconfig := clientcmd.NewDefaultClientConfigLoadingRules().GetDefaultFilename()
+    config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
     if err != nil {
-        logging.Logger.Error("Error creating in-cluster config", zap.Error(err))
+        logging.Logger.Error("Error loading kubeconfig", zap.Error(err))
         return
     }
 
@@ -44,6 +47,7 @@ func runScaleUp(cmd *cobra.Command, args []string) {
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
     defer cancel()
 
+    limiter := rate.NewLimiter(rate.Every(200*time.Millisecond), 1) // Adjust rate as necessary
     workloadReplicas, err := utils.LoadReplicasFromFile(replicaFile)
     if err != nil {
         logging.Logger.Error("Error loading replicas from file", zap.Error(err))
@@ -52,21 +56,24 @@ func runScaleUp(cmd *cobra.Command, args []string) {
 
     var wg sync.WaitGroup
 
-    // Handle CronJobs and Jobs in a separate Goroutine
+    // Resume CronJobs
     wg.Add(1)
-    go kube.HandleCronJobsAndJobs(ctx, clientset, namespace, storageClass, &wg)
+    go kube.ResumeCronJobs(ctx, clientset, namespace, storageClass, &wg)
 
-    // Output or scale up the workloads
+    // Scale up other workloads
     for workload, scaler := range workloadReplicas {
-        if dryRun {
-            logging.Logger.Info("Would scale up", zap.String("workload", workload))
-        } else {
-            logging.Logger.Info("Scaling up", zap.String("workload", workload))
-            kube.ScaleResource(clientset, scaler, namespace, scaler.GetOriginalReplicas())
-        }
+        wg.Add(1)
+        go func(workload string, scaler kube.Scalable) {
+            defer wg.Done()
+            limiter.Wait(ctx)
+            retry.OnError(retry.DefaultBackoff, func(error) bool { return true }, func() error {
+                logging.Logger.Info("Scaling up", zap.String("workload", workload))
+                originalReplicas := scaler.GetOriginalReplicas()
+                return kube.ScaleResourceWithContext(ctx, clientset, scaler, namespace, originalReplicas)
+            })
+        }(workload, scaler)
     }
 
-    // Wait for CronJobs and Jobs to be handled
     wg.Wait()
 
     if dryRun {
