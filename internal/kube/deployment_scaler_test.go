@@ -7,7 +7,11 @@ import (
 )
 
 func TestDeploymentScaler(t *testing.T) {
-    deployment := &appsv1.Deployment{}
+    deployment := &appsv1.Deployment{
+        Spec: appsv1.DeploymentSpec{
+            Replicas: int32Ptr(3),
+        },
+    }
     scaler := &DeploymentScaler{Deployment: deployment}
 
     replicas := int32(3)
@@ -20,7 +24,11 @@ func TestDeploymentScaler(t *testing.T) {
         t.Errorf("expected GetReplicas to return 0, got %d", scaler.GetReplicas())
     }
 
-    if scaler.GetOriginalReplicas() != replicas {
-        t.Errorf("expected GetOriginalReplicas to return %d, got %d", replicas, scaler.GetOriginalReplicas())
+    if scaler.GetOriginalReplicas() != 3 {
+        t.Errorf("expected GetOriginalReplicas to return 3, got %d", scaler.GetOriginalReplicas())
     }
+}
+
+func int32Ptr(i int32) *int32 {
+    return &i
 }

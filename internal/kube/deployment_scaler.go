@@ -9,8 +9,8 @@ import (
 )
 
 type DeploymentScaler struct {
-    Deployment *appsv1.Deployment
-    originalReplicas int32
+    Deployment       *appsv1.Deployment
+    OriginalReplicas int32
 }
 
 func (d *DeploymentScaler) GetReplicas() int32 {
@@ -19,13 +19,13 @@ func (d *DeploymentScaler) GetReplicas() int32 {
 
 func (d *DeploymentScaler) SetReplicas(replicas int32) {
     if replicas > 0 {
-        d.originalReplicas = replicas
+        d.OriginalReplicas = *d.Deployment.Spec.Replicas
     }
     d.Deployment.Spec.Replicas = &replicas
 }
 
 func (d *DeploymentScaler) GetOriginalReplicas() int32 {
-    return d.originalReplicas
+    return d.OriginalReplicas
 }
 
 func (d *DeploymentScaler) Update(clientset *kubernetes.Clientset, namespace, name string) error {

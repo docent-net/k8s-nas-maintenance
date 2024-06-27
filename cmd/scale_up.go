@@ -2,13 +2,14 @@ package cmd
 
 import (
     "context"
-    "fmt"
     "sync"
     "time"
 
     "github.com/spf13/cobra"
     "github.com/docent-net/k8s-nas-maintenance/internal/kube"
+    "github.com/docent-net/k8s-nas-maintenance/internal/logging"
     "github.com/docent-net/k8s-nas-maintenance/internal/utils"
+    "go.uber.org/zap"
     "k8s.io/client-go/kubernetes"
     "k8s.io/client-go/rest"
 )
@@ -30,13 +31,13 @@ func runScaleUp(cmd *cobra.Command, args []string) {
 
     config, err := rest.InClusterConfig()
     if err != nil {
-        fmt.Printf("Error creating in-cluster config: %v\n", err)
+        logging.Logger.Error("Error creating in-cluster config", zap.Error(err))
         return
     }
 
     clientset, err := kubernetes.NewForConfig(config)
     if err != nil {
-        fmt.Printf("Error creating Kubernetes client: %v\n", err)
+        logging.Logger.Error("Error creating Kubernetes client", zap.Error(err))
         return
     }
 
@@ -45,7 +46,7 @@ func runScaleUp(cmd *cobra.Command, args []string) {
 
     workloadReplicas, err := utils.LoadReplicasFromFile(replicaFile)
     if err != nil {
-        fmt.Printf("Error loading replicas from file: %v\n", err)
+        logging.Logger.Error("Error loading replicas from file", zap.Error(err))
         return
     }
 
@@ -55,14 +56,22 @@ func runScaleUp(cmd *cobra.Command, args []string) {
     wg.Add(1)
     go kube.HandleCronJobsAndJobs(ctx, clientset, namespace, storageClass, &wg)
 
-    // Scale up the workloads
+    // Output or scale up the workloads
     for workload, scaler := range workloadReplicas {
-        fmt.Printf("Scaling up %s\n", workload)
-        kube.ScaleResource(clientset, scaler, namespace, scaler.GetOriginalReplicas())
+        if dryRun {
+            logging.Logger.Info("Would scale up", zap.String("workload", workload))
+        } else {
+            logging.Logger.Info("Scaling up", zap.String("workload", workload))
+            kube.ScaleResource(clientset, scaler, namespace, scaler.GetOriginalReplicas())
+        }
     }
 
     // Wait for CronJobs and Jobs to be handled
     wg.Wait()
 
-    fmt.Println("Workloads have been scaled up.")
+    if dryRun {
+        logging.Logger.Info("Dry run complete. No changes were made.")
+    } else {
+        logging.Logger.Info("Workloads have been scaled up.")
+    }
 }

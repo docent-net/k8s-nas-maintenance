@@ -10,7 +10,8 @@ import (
 )
 
 type DaemonSetScaler struct {
-    DaemonSet *appsv1.DaemonSet
+    DaemonSet        *appsv1.DaemonSet
+    OriginalReplicas int32
 }
 
 func (d *DaemonSetScaler) GetReplicas() int32 {
@@ -19,6 +20,7 @@ func (d *DaemonSetScaler) GetReplicas() int32 {
 
 func (d *DaemonSetScaler) SetReplicas(replicas int32) {
     if replicas == 0 {
+        d.OriginalReplicas = 1
         d.DaemonSet.Spec.UpdateStrategy.RollingUpdate = &appsv1.RollingUpdateDaemonSet{MaxUnavailable: &intstr.IntOrString{IntVal: 0}}
     } else {
         d.DaemonSet.Spec.UpdateStrategy.RollingUpdate = nil // Reset to default
@@ -26,7 +28,7 @@ func (d *DaemonSetScaler) SetReplicas(replicas int32) {
 }
 
 func (d *DaemonSetScaler) GetOriginalReplicas() int32 {
-    return 1 // DaemonSets do not use replicas directly
+    return d.OriginalReplicas
 }
 
 func (d *DaemonSetScaler) Update(clientset *kubernetes.Clientset, namespace, name string) error {

@@ -2,20 +2,28 @@ package kube
 
 import (
     "testing"
+
+    "k8s.io/client-go/kubernetes"
 )
 
+type MockScalable struct {
+    Replicas int32
+}
+
+func (m *MockScalable) GetReplicas() int32                { return 0 }
+func (m *MockScalable) SetReplicas(replicas int32)        { m.Replicas = replicas }
+func (m *MockScalable) GetOriginalReplicas() int32        { return m.Replicas }
+func (m *MockScalable) Update(clientset *kubernetes.Clientset, namespace, name string) error { return nil }
+
 func TestScaleResource(t *testing.T) {
-    // Create a mock clientset and a scalable resource for testing
     clientset := &kubernetes.Clientset{}
     scaler := &MockScalable{}
 
     namespace := "default"
     replicas := int32(3)
 
-    // Call ScaleResource with the mock clientset and scaler
     ScaleResource(clientset, scaler, namespace, replicas)
 
-    // Verify that the replicas were set correctly
     if scaler.Replicas != replicas {
         t.Errorf("expected replicas to be %d, got %d", replicas, scaler.Replicas)
     }

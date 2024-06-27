@@ -2,13 +2,14 @@ package cmd
 
 import (
     "context"
-    "fmt"
     "sync"
     "time"
 
     "github.com/spf13/cobra"
     "github.com/docent-net/k8s-nas-maintenance/internal/kube"
+    "github.com/docent-net/k8s-nas-maintenance/internal/logging"
     "github.com/docent-net/k8s-nas-maintenance/internal/utils"
+    "go.uber.org/zap"
     "k8s.io/client-go/kubernetes"
     "k8s.io/client-go/rest"
     metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,13 +32,13 @@ func runScaleDown(cmd *cobra.Command, args []string) {
 
     config, err := rest.InClusterConfig()
     if err != nil {
-        fmt.Printf("Error creating in-cluster config: %v\n", err)
+        logging.Logger.Error("Error creating in-cluster config", zap.Error(err))
         return
     }
 
     clientset, err := kubernetes.NewForConfig(config)
     if err != nil {
-        fmt.Printf("Error creating Kubernetes client: %v\n", err)
+        logging.Logger.Error("Error creating Kubernetes client", zap.Error(err))
         return
     }
 
@@ -56,7 +57,7 @@ func runScaleDown(cmd *cobra.Command, args []string) {
     if namespace == "" {
         nsList, err := clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
         if err != nil {
-            fmt.Printf("Error listing namespaces: %v\n", err)
+            logging.Logger.Error("Error listing namespaces", zap.Error(err))
             return
         }
         namespaces = []string{}
@@ -68,7 +69,7 @@ func runScaleDown(cmd *cobra.Command, args []string) {
     for _, ns := range namespaces {
         pvcs, err := clientset.CoreV1().PersistentVolumeClaims(ns).List(ctx, metav1.ListOptions{})
         if err != nil {
-            fmt.Printf("Error listing PVCs: %v\n", err)
+            logging.Logger.Error("Error listing PVCs", zap.Error(err))
             return
         }
 
@@ -77,7 +78,7 @@ func runScaleDown(cmd *cobra.Command, args []string) {
                 // Find all Pods using these PVCs
                 pods, err := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
                 if err != nil {
-                    fmt.Printf("Error listing Pods: %v\n", err)
+                    logging.Logger.Error("Error listing Pods", zap.Error(err))
                     return
                 }
 
@@ -90,14 +91,14 @@ func runScaleDown(cmd *cobra.Command, args []string) {
                                 case "ReplicaSet":
                                     rs, err := clientset.AppsV1().ReplicaSets(ns).Get(ctx, ownerRef.Name, metav1.GetOptions{})
                                     if err != nil {
-                                        fmt.Printf("Error getting ReplicaSet: %v\n", err)
+                                        logging.Logger.Error("Error getting ReplicaSet", zap.Error(err))
                                         continue
                                     }
                                     deploymentOwner := rs.OwnerReferences[0]
                                     if deploymentOwner.Kind == "Deployment" {
                                         deployment, err := clientset.AppsV1().Deployments(ns).Get(ctx, deploymentOwner.Name, metav1.GetOptions{})
                                         if err != nil {
-                                            fmt.Printf("Error getting Deployment: %v\n", err)
+                                            logging.Logger.Error("Error getting Deployment", zap.Error(err))
                                             continue
                                         }
                                         workloadReplicas["deployment/"+deployment.Name] = &kube.DeploymentScaler{Deployment: deployment}
@@ -105,19 +106,19 @@ func runScaleDown(cmd *cobra.Command, args []string) {
                                 case "StatefulSet":
                                     statefulSet, err := clientset.AppsV1().StatefulSets(ns).Get(ctx, ownerRef.Name, metav1.GetOptions{})
                                     if err != nil {
-                                        fmt.Printf("Error getting StatefulSet: %v\n", err)
+                                        logging.Logger.Error("Error getting StatefulSet", zap.Error(err))
                                         continue
                                     }
                                     workloadReplicas["statefulset/"+statefulSet.Name] = &kube.StatefulSetScaler{StatefulSet: statefulSet}
                                 case "DaemonSet":
                                     daemonSet, err := clientset.AppsV1().DaemonSets(ns).Get(ctx, ownerRef.Name, metav1.GetOptions{})
                                     if err != nil {
-                                        fmt.Printf("Error getting DaemonSet: %v\n", err)
+                                        logging.Logger.Error("Error getting DaemonSet", zap.Error(err))
                                         continue
                                     }
                                     workloadReplicas["daemonset/"+daemonSet.Name] = &kube.DaemonSetScaler{DaemonSet: daemonSet}
                                 default:
-                                    fmt.Printf("Unknown resource kind: %s for resource %s\n", ownerRef.Kind, ownerRef.Name)
+                                    logging.Logger.Warn("Unknown resource kind", zap.String("kind", ownerRef.Kind), zap.String("name", ownerRef.Name))
                                 }
                             }
                         }
@@ -128,20 +129,30 @@ func runScaleDown(cmd *cobra.Command, args []string) {
     }
 
     // Save original replicas to file
-    err = utils.SaveReplicasToFile(replicaFile, workloadReplicas)
-    if err != nil {
-        fmt.Printf("Error saving replicas to file: %v\n", err)
-        return
+    if !dryRun {
+        err = utils.SaveReplicasToFile(replicaFile, workloadReplicas)
+        if err != nil {
+            logging.Logger.Error("Error saving replicas to file", zap.Error(err))
+            return
+        }
     }
 
-    // Scale down the workloads
+    // Output or scale down the workloads
     for workload, scaler := range workloadReplicas {
-        fmt.Printf("Scaling down %s\n", workload)
-        kube.ScaleResource(clientset, scaler, namespace, 0)
+        if dryRun {
+            logging.Logger.Info("Would scale down", zap.String("workload", workload))
+        } else {
+            logging.Logger.Info("Scaling down", zap.String("workload", workload))
+            kube.ScaleResource(clientset, scaler, namespace, 0)
+        }
     }
 
     // Wait for CronJobs and Jobs to be handled
     wg.Wait()
 
-    fmt.Println("Workloads have been scaled down.")
+    if dryRun {
+        logging.Logger.Info("Dry run complete. No changes were made.")
+    } else {
+        logging.Logger.Info("Workloads have been scaled down.")
+    }
 }

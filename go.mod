@@ -4,6 +4,7 @@ go 1.22
 
 require (
 	github.com/spf13/cobra v1.6.1
+	go.uber.org/zap v1.27.0
 	k8s.io/api v0.21.0
 	k8s.io/apimachinery v0.21.0
 	k8s.io/client-go v0.21.0
@@ -22,6 +23,7 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.1 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
+	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/net v0.0.0-20210224082022-3d97a244fca7 // indirect
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d // indirect
 	golang.org/x/sys v0.0.0-20210225134936-a50acf3fe073 // indirect
