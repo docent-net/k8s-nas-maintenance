@@ -92,6 +92,8 @@ func runScaleDown(cmd *cobra.Command, args []string) {
                         if volume.PersistentVolumeClaim != nil && volume.PersistentVolumeClaim.ClaimName == pvc.Name {
                             ownerRefs := pod.OwnerReferences
                             for _, ownerRef := range ownerRefs {
+                                logging.Logger.Debug("ownerRef Kind / Name", zap.String("ReplicaSet", ownerRef.Kind),
+                                zap.String("ReplicaSet", ownerRef.Name))
                                 switch ownerRef.Kind {
                                 case "ReplicaSet":
                                     rs, err := clientset.AppsV1().ReplicaSets(ns).Get(ctx, ownerRef.Name, metav1.GetOptions{})
@@ -99,24 +101,39 @@ func runScaleDown(cmd *cobra.Command, args []string) {
                                         logging.Logger.Error("Error getting ReplicaSet", zap.Error(err))
                                         continue
                                     }
-                                    deploymentOwner := rs.OwnerReferences[0]
-                                    if deploymentOwner.Kind == "Deployment" {
-                                        deployment, err := clientset.AppsV1().Deployments(ns).Get(ctx, deploymentOwner.Name, metav1.GetOptions{})
-                                        if err != nil {
-                                            logging.Logger.Error("Error getting Deployment", zap.Error(err))
-                                            continue
+                                    if len(rs.OwnerReferences) == 0 {
+                                        logging.Logger.Error("ReplicaSet has no owner references; we don't support " +
+                                        "standalone replicasets", zap.String("ReplicaSet", rs.Name))
+                                        continue
+                                    } else if len(rs.OwnerReferences) > 1 {
+                                        logging.Logger.Error("ReplicaSet has more than 1 owner references; we don't support " +
+                                        "this kind of RSes", zap.String("ReplicaSet", rs.Name))
+                                        continue
+                                    } else { // Deployment case
+                                        rsRefOwner := rs.OwnerReferences[0]
+                                        if rsRefOwner.Kind == "Deployment" {
+                                            deployment, err := clientset.AppsV1().Deployments(ns).Get(ctx, rsRefOwner.Name, metav1.GetOptions{})
+                                            if err != nil {
+                                                logging.Logger.Error("Error getting Deployment", zap.Error(err))
+                                                continue
+                                            }
+                                            scaler := &kube.DeploymentScaler{Deployment: deployment}
+                                            logging.Logger.Info("Current Deployment replicas",
+                                                zap.String("name", deployment.Name),
+                                                zap.String("namespace", ns),
+                                                zap.Int32("replicas", scaler.GetReplicas()),
+                                            )
+                                            if scaler.GetReplicas() == 0 {
+                                                logging.Logger.Info("Skipping Deployment already at 0 replicas", zap.String("name", deployment.Name), zap.String("namespace", ns))
+                                                continue
+                                            }
+                                            workloadReplicas["deployment/"+deployment.Name] = scaler
+                                        } else {
+                                            logging.Logger.Error("ReplicaSet owner is not a Deployment; we don't " +
+                                            "this", zap.String("ownerName", rsRefOwner.Name), zap.String("ownerKind", rsRefOwner.Kind))
+                                        continue
                                         }
-                                        scaler := &kube.DeploymentScaler{Deployment: deployment}
-                                        logging.Logger.Info("Current Deployment replicas",
-                                            zap.String("name", deployment.Name),
-                                            zap.String("namespace", ns),
-                                            zap.Int32("replicas", scaler.GetReplicas()),
-                                        )
-                                        if scaler.GetReplicas() == 0 {
-                                            logging.Logger.Info("Skipping Deployment already at 0 replicas", zap.String("name", deployment.Name), zap.String("namespace", ns))
-                                            continue
-                                        }
-                                        workloadReplicas["deployment/"+deployment.Name] = scaler
+
                                     }
                                 case "StatefulSet":
                                     statefulSet, err := clientset.AppsV1().StatefulSets(ns).Get(ctx, ownerRef.Name, metav1.GetOptions{})

@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sleep-deployment
+  namespace: tests
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sleep
+  template:
+    metadata:
+      labels:
+        app: sleep
+    spec:
+      tolerations:
+      - key: "netrunner/apps"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      - key: "netrunner/services"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      containers:
+      - name: sleep-container
+        image: busybox
+        command: ["sleep", "infinity"]
+        volumeMounts:
+        - mountPath: /app
+          name: app-volume
+      volumes:
+      - name: app-volume
+        persistentVolumeClaim:
+          claimName: app-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-pvc
+  namespace: tests
+spec:
+  storageClassName: netrunner-nfs-ssd-snaps
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sleep-deployment2
+  namespace: tests
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sleep
+  template:
+    metadata:
+      labels:
+        app: sleep
+    spec:
+      tolerations:
+      - key: "netrunner/apps"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      - key: "netrunner/services"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      containers:
+      - name: sleep-container
+        image: busybox
+        command: ["sleep", "infinity"]
+        volumeMounts:
+        - mountPath: /app
+          name: app-volume
+      volumes:
+      - name: app-volume
+        persistentVolumeClaim:
+          claimName: app-pvc2
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-pvc2
+  namespace: tests
+spec:
+  storageClassName: netrunner-nfs-ssd-snaps
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Mi
